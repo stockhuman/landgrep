@@ -304,6 +304,7 @@ mod tests {
       n_landmasses: n,
       lasso: None,
       lasso_ring: None,
+      edits: Default::default(),
     };
     // rows 0–2, cols 0–3 of the raster → strip pixels rows 1–2 × cols 1–3
     let ring = [[46.0, -74.0], [46.0, -73.5], [45.6, -73.5], [45.6, -74.0]];
@@ -342,6 +343,7 @@ mod tests {
       n_landmasses: 0,
       lasso: None,
       lasso_ring: None,
+      edits: Default::default(),
     };
     let ring = [[46.0, -74.0], [46.0, -73.5], [45.6, -73.5], [45.6, -74.0]];
     let keep = lasso_footprint(&cache, &ring).unwrap();

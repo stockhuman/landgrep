@@ -16,17 +16,13 @@ export default function RectangleDraw({ drawMode, onDrawEnd }: Props) {
   const startRef = useRef<LatLng | null>(null)
   const [drag, setDrag] = useState<Corner | null>(null)
 
+  // (ToolCursor in ./index owns dragging and the cursor)
   useEffect(() => {
-    if (drawMode) {
-      map.dragging.disable()
-      map.getContainer().style.cursor = "crosshair"
-    } else {
-      map.dragging.enable()
-      map.getContainer().style.cursor = ""
+    if (!drawMode) {
       startRef.current = null
       setDrag(null)
     }
-  }, [drawMode, map])
+  }, [drawMode])
 
   function squareConstrain(start: LatLng, end: LatLng): LatLng {
     // Work in pixel space so the square looks square on screen.

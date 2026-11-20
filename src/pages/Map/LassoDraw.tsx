@@ -21,18 +21,14 @@ export default function LassoDraw({ active, onDrawEnd }: Props) {
   const drawingRef = useRef(false)
   const [points, setPoints] = useState<[number, number][]>([])
 
+  // (ToolCursor in ./index owns dragging and the cursor)
   useEffect(() => {
-    if (active) {
-      map.dragging.disable()
-      map.getContainer().style.cursor = "crosshair"
-    } else {
-      map.dragging.enable()
-      map.getContainer().style.cursor = ""
+    if (!active) {
       drawingRef.current = false
       pointsRef.current = []
       setPoints([])
     }
-  }, [active, map])
+  }, [active])
 
   useMapEvents({
     mousedown(e) {

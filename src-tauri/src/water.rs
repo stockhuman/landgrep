@@ -258,11 +258,18 @@ pub(crate) fn mask_from_overpass(
   Ok(rasterize_ring_groups(&geo.water_groups, south, north, west, east, width, height))
 }
 
-/// Flatten masked pixels to just below the lowest LAND elevation, not to 0 —
-/// zeroing gouges a crater wherever terrain sits well above sea level
-/// (e.g. a 230 m reservoir) and makes coastal noise indistinguishable.
-/// Returns the level used, or None when the mask is empty or all-water.
-pub(crate) fn flatten_water(data: &mut [f32], mask: &[bool]) -> Option<f32> {
+/// Flatten masked pixels to just below the shoreline (land touching water),
+/// not to 0 — zeroing gouges a crater wherever terrain sits well above sea
+/// level (e.g. a 230 m reservoir) and makes coastal noise indistinguishable.
+///
+/// Shores, not all land: an inland pit says nothing about the water, and the
+/// Montréal-Est quarry (about −60 m in COP30) used to sink every river in
+/// the Montreal bbox 60-odd metres underground. And the shoreline's 1st
+/// percentile, not its minimum: DEMs are noisiest right at the water's edge
+/// (COP30 has −34 m "banks" on the Rivière des Prairies). Dry land below the
+/// level stays where it is. Returns the level used, or None when the mask is
+/// empty or all-water.
+pub(crate) fn flatten_water(data: &mut [f32], mask: &[bool], width: usize) -> Option<f32> {
   let water_px = mask
     .iter()
     .filter(|&&w| w)
@@ -271,16 +278,36 @@ pub(crate) fn flatten_water(data: &mut [f32], mask: &[bool]) -> Option<f32> {
     return None;
   }
 
+  let height = mask.len() / width;
+  let touches_water = |i: usize| {
+    let (row, col) = (i / width, i % width);
+    (col > 0 && mask[i - 1]) ||
+      (col + 1 < width && mask[i + 1]) ||
+      (row > 0 && mask[i - width]) ||
+      (row + 1 < height && mask[i + width])
+  };
   let mut land_min = f32::INFINITY;
   let mut land_max = f32::NEG_INFINITY;
+  let mut shore: Vec<f32> = Vec::new();
   for (i, &is_water) in mask.iter().enumerate() {
     if !is_water {
       land_min = land_min.min(data[i]);
       land_max = land_max.max(data[i]);
+      if touches_water(i) {
+        shore.push(data[i]);
+      }
     }
   }
+  // (a grid holding both water and land always has a shore; the guard is
+  // for a width that doesn't divide the mask)
+  let shore_low = if shore.is_empty() {
+    land_min
+  } else {
+    let k = (shore.len() - 1) / 100;
+    *shore.select_nth_unstable_by(k, |a, b| a.total_cmp(b)).1
+  };
   let gap = ((land_max - land_min) * 0.02).max(1.0);
-  let level = land_min - gap;
+  let level = shore_low - gap;
   for (i, &is_water) in mask.iter().enumerate() {
     if is_water {
       data[i] = level;
@@ -356,22 +383,64 @@ mod tests {
   }
 
   #[test]
-  fn flatten_water_sits_below_land_minimum() {
-    // Reservoir scenario: land 197–289 m, water surface ~232 m. Flattening
-    // must land just below 197, never at 0.
-    let mut data = vec![197.0, 289.0, 232.0, 231.5];
-    let mask = vec![false, false, true, true];
-    let level = flatten_water(&mut data, &mask).unwrap();
+  fn flatten_water_sits_just_below_the_shore() {
+    // Reservoir scenario: a ~232 m reservoir with banks from 233 m, in a
+    // bbox whose land runs 197–289 m. Flattening must land just below the
+    // lowest bank — never at 0, and not down at the valley floor either,
+    // which never touches the water.
+    let mut data = vec![
+      197.0, 210.0, 240.0, 289.0,
+      205.0, 233.0, 232.0, 231.5,
+      215.0, 236.0, 232.0, 232.0,
+    ];
+    let mask = vec![
+      false, false, false, false,
+      false, false, true,  true,
+      false, false, true,  true,
+    ];
+    let land = data.clone();
+    let level = flatten_water(&mut data, &mask, 4).unwrap();
     let expected_gap = ((289.0f32 - 197.0) * 0.02).max(1.0);
-    assert_eq!(level, 197.0 - expected_gap);
-    assert_eq!(data, vec![197.0, 289.0, level, level]);
+    assert_eq!(level, 233.0 - expected_gap);
+    for (i, &is_water) in mask.iter().enumerate() {
+      assert_eq!(data[i], if is_water { level } else { land[i] });
+    }
+  }
+
+  #[test]
+  fn inland_pits_dont_drag_the_water_down() {
+    // The Montréal-Est quarry: a river with 20 m banks and a −57 m pit that
+    // never touches it. The river stays just under its banks; the pit stays
+    // a dry pit.
+    let (w, h) = (6usize, 3usize);
+    let mut data = vec![20.0f32; w * h];
+    let mask: Vec<bool> = (0..w * h).map(|i| i % w == 0).collect(); // river down col 0
+    data[w + 4] = -57.0;
+    let level = flatten_water(&mut data, &mask, w).unwrap();
+    assert!(level > 0.0 && level < 20.0, "river at {level} m");
+    assert_eq!(data[w + 4], -57.0);
+  }
+
+  #[test]
+  fn a_bad_bank_pixel_doesnt_drag_the_water_down() {
+    // A lake down the middle of a 200-row strip, banks at 20 m, and one
+    // −34 m bank pixel of DEM noise: the water still sits under the 20 m
+    // banks, and the noise is left as a dry notch.
+    let (w, h) = (3usize, 200usize);
+    let mut data = vec![20.0f32; w * h];
+    let mask: Vec<bool> = (0..w * h).map(|i| i % w == 1).collect();
+    data[50 * w] = -34.0;
+    let level = flatten_water(&mut data, &mask, w).unwrap();
+    let gap = ((20.0f32 - -34.0) * 0.02).max(1.0);
+    assert_eq!(level, 20.0 - gap);
+    assert_eq!(data[50 * w], -34.0);
   }
 
   #[test]
   fn flatten_water_degenerate_masks_are_noops() {
     let mut data = vec![5.0, 10.0];
-    assert_eq!(flatten_water(&mut data, &[false, false]), None);
-    assert_eq!(flatten_water(&mut data, &[true, true]), None);
+    assert_eq!(flatten_water(&mut data, &[false, false], 2), None);
+    assert_eq!(flatten_water(&mut data, &[true, true], 2), None);
     assert_eq!(data, vec![5.0, 10.0]);
   }
 

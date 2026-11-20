@@ -19,11 +19,38 @@ export interface Heightmap {
   waterMaskError: string | null
   /** Number of connected land components; null when no mask was built. */
   landmassCount: number | null
+  /** Water mask at preview resolution (1 = water); null when no mask was built. */
+  water: number[] | null
+  /** Land area left above water; null when no mask was built. */
+  landKm2: number | null
 }
 
 export interface LandmassInfo {
   id: number
   areaKm2: number
+  /** Sea level at which the last of it goes under: its highest point. */
+  submergedAt: number
+}
+
+/** A labelled stop on the sea-level slider. */
+export interface SeaMark {
+  level: number
+  label: string
+  title: string
+}
+
+/** What set_sea_level, carve_text and undo_carving send back. */
+export interface TerrainUpdate {
+  heightmap: Heightmap
+  overlay: string | null
+  /** Highest point the latest carving left. */
+  carvedTop: number | null
+}
+
+/** What the fetch looked like before anyone touched the sea. */
+export interface FetchedStats {
+  maxElev: number
+  landKm2: number | null
 }
 
 export interface LassoInfo {
@@ -46,6 +73,9 @@ export const DEM_TYPES = [
 
 export type DemType = (typeof DEM_TYPES)[number]["value"]
 
+/** Pixels sent to the 3D preview over IPC. */
+export const PREVIEW_RES = 256
+
 const DEFAULT_HOME: MapHome = { lat: 45.54, lng: -73.65, zoom: 10 }
 
 interface State {
@@ -60,6 +90,18 @@ interface State {
   selectedLandmasses: LandmassInfo[]
   /** Freehand lasso selection (clipped to land); exclusive with landmass selection. */
   lassoSelection: LassoInfo | null
+  /** Metres above today's sea level (0 = the coastline as fetched). */
+  seaLevel: number
+  fetchedStats: FetchedStats | null
+  seaMarks: SeaMark[]
+  /** Text for the carve tool, and how many carvings are in. */
+  carveText: string
+  carvings: number
+  /** Letter height and relief in metres; null = scaled to the fetch. */
+  carveSizeM: number | null
+  carveReliefM: number | null
+  /** What the carve tool last had to say. */
+  carveNote: string | null
   verticalScale: number
   demType: DemType
   /** Max pixel dimension of the mesh written to the STL file (0 = full res). */
@@ -78,6 +120,16 @@ interface State {
   setLandmassOverlay: (url: string | null) => void
   setSelectedLandmasses: (lms: LandmassInfo[]) => void
   setLassoSelection: (l: LassoInfo | null) => void
+  setSeaLevel: (m: number) => void
+  setFetchedStats: (s: FetchedStats | null) => void
+  setSeaMarks: (marks: SeaMark[]) => void
+  setCarveText: (t: string) => void
+  setCarvings: (n: number) => void
+  setCarveSizeM: (m: number | null) => void
+  setCarveReliefM: (m: number | null) => void
+  setCarveNote: (note: string | null) => void
+  /** Show a terrain update: preview, overlay, and no selection. */
+  applyUpdate: (u: TerrainUpdate) => void
   setVerticalScale: (scale: number) => void
   setDemType: (t: DemType) => void
   setExportRes: (r: number) => void
@@ -107,6 +159,14 @@ export const useStore = create<State>()(set => ({
   landmassOverlay: null,
   selectedLandmasses: [],
   lassoSelection: null,
+  seaLevel: 0,
+  fetchedStats: null,
+  seaMarks: [],
+  carveText: load("carve-text", "MINE"),
+  carvings: 0,
+  carveSizeM: null,
+  carveReliefM: null,
+  carveNote: null,
   verticalScale: parseFloat(load("vertical-scale", "1.5")),
   demType: (load("dem-type", "SRTMGL3") as DemType),
   exportRes: parseInt(load("export-res", "512")),
@@ -124,6 +184,24 @@ export const useStore = create<State>()(set => ({
   setLandmassOverlay: url => set({ landmassOverlay: url }),
   setSelectedLandmasses: lms => set({ selectedLandmasses: lms }),
   setLassoSelection: l => set({ lassoSelection: l }),
+  setSeaLevel: m => set({ seaLevel: m }),
+  setFetchedStats: s => set({ fetchedStats: s }),
+  setSeaMarks: marks => set({ seaMarks: marks }),
+  setCarveText: t => {
+    localStorage.setItem("carve-text", t)
+    set({ carveText: t })
+  },
+  setCarvings: n => set({ carvings: n }),
+  setCarveSizeM: m => set({ carveSizeM: m }),
+  setCarveReliefM: m => set({ carveReliefM: m }),
+  setCarveNote: note => set({ carveNote: note }),
+  applyUpdate: u =>
+    set({
+      heightmap: u.heightmap,
+      landmassOverlay: u.overlay,
+      selectedLandmasses: [],
+      lassoSelection: null,
+    }),
   setVerticalScale: scale => {
     localStorage.setItem("vertical-scale", String(scale))
     set({ verticalScale: scale })

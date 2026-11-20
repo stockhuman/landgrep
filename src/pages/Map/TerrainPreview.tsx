@@ -4,6 +4,7 @@ import { OrbitControls } from "@react-three/drei"
 import * as THREE from "three"
 import { invoke } from "@tauri-apps/api/core"
 import { useStore, type Heightmap, type Bounds } from "../../data/store"
+import SeaLevel from "./SeaLevel"
 import styles from "./Map.module.css"
 
 const WATER_COLOR: [number, number, number] = [0.29, 0.50, 0.71] // #4a80b5
@@ -33,7 +34,7 @@ function TerrainMesh({ heightmap, bounds, verticalScale }: {
   bounds: Bounds
   verticalScale: number
 }) {
-  const { data, width, height, minElev, maxElev, waterLevel } = heightmap
+  const { data, width, height, minElev, maxElev, waterLevel, water } = heightmap
 
   // Aspect ratio from physical dimensions (metres)
   const latCenter = (bounds.north + bounds.south) / 2
@@ -68,9 +69,13 @@ function TerrainMesh({ heightmap, bounds, verticalScale }: {
         // × verticalScale, so the preview matches the exported solid's top.
         pos[vIdx + 2] = Math.max(0, elev - minElev) * unitsPerMetre * verticalScale
 
-        // Water is an exact flattened level from the backend; everything else
-        // ramps over the land range so low-relief terrain still shows contrast.
-        const isWater = waterLevel != null && elev <= waterLevel + 1e-3
+        // Water comes from the backend's mask (dry land can sit below the
+        // water level: quarries, or a basin a raised sea hasn't reached);
+        // everything else ramps over the land range so low-relief terrain
+        // still shows contrast.
+        const isWater = water
+          ? water[dataRow * width + dataCol] === 1
+          : waterLevel != null && elev <= waterLevel + 1e-3
         const landRange = Math.max(maxElev - minElev, 1)
         const tc = Math.min(Math.max((elev - minElev) / landRange, 0), 1)
         const [r, gv, b] = isWater ? WATER_COLOR : elevColor(tc)
@@ -84,7 +89,7 @@ function TerrainMesh({ heightmap, bounds, verticalScale }: {
     g.computeVertexNormals()
     return g
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, unitsPerMetre, verticalScale, planeW, planeH, segW, segH])
+  }, [data, water, unitsPerMetre, verticalScale, planeW, planeH, segW, segH])
 
   const meshRef = useRef<THREE.Mesh>(null)
 
@@ -151,6 +156,8 @@ export default function TerrainPreview() {
         <TerrainMesh heightmap={heightmap} bounds={bounds} verticalScale={verticalScale} />
         <OrbitControls makeDefault />
       </Canvas>
+
+      <SeaLevel />
 
       <div className={styles.exportRow}>
         <button className={styles.exportBtn} onClick={handleExportStl}>
